@@ -205,152 +205,7 @@ handle = pcap_open_live("eno1", BUFSIZ, 1, 1000, errbuf);
 
 ---
 
-## 5. 코드
-
-보고서 최하단에 추가로 Github 링크도 추가해놓았다.
-
-### myheader.h
-
-```c
-/* Ethernet header */
-struct ethheader {
-    u_char  ether_dhost[6];
-    u_char  ether_shost[6];
-    u_short ether_type;
-};
-
-/* IP Header */
-struct ipheader {
-  unsigned char      iph_ihl:4,
-                     iph_ver:4;
-  unsigned char      iph_tos;
-  unsigned short int iph_len;
-  unsigned short int iph_ident;
-  unsigned short int iph_flag:3,
-                     iph_offset:13;
-  unsigned char      iph_ttl;
-  unsigned char      iph_protocol;
-  unsigned short int iph_chksum;
-  struct  in_addr    iph_sourceip;
-  struct  in_addr    iph_destip;
-};
-
-/* TCP Header */
-struct tcpheader {
-    u_short tcp_sport;
-    u_short tcp_dport;
-    u_int   tcp_seq;
-    u_int   tcp_ack;
-    u_char  tcp_offx2;
-#define TH_OFF(th)  (((th)->tcp_offx2 & 0xf0) >> 4)
-    u_char  tcp_flags;
-    u_short tcp_win;
-    u_short tcp_sum;
-    u_short tcp_urp;
-};
-```
-
-### pcap_sniffer.c
-
-```c
-#include <arpa/inet.h>
-#include <pcap.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "myheader.h"
-
-// pcap_loop에서 패킷 캡처 시마다 호출되는 콜백 함수
-// Ethernet -> IP -> TCP -> HTTP 순서로 역캡슐화하여 각 헤더 정보 출력
-void got_packet(u_char *args, const struct pcap_pkthdr *header,
-                const u_char *packet) {
-  struct ethheader *eth = (struct ethheader *)packet;
-
-  if (ntohs(eth->ether_type) != 0x0800) // 0x0800 = IPv4
-    return;
-
-  struct ipheader *ip = (struct ipheader *)(packet + sizeof(struct ethheader));
-  int ip_header_len = ip->iph_ihl * 4; // ihl * 4 = 실제 바이트 수
-
-  if (ip->iph_protocol != IPPROTO_TCP)
-    return;
-
-  struct tcpheader *tcp =
-      (struct tcpheader *)(packet + sizeof(struct ethheader) + ip_header_len);
-  int tcp_header_len = TH_OFF(tcp) * 4; // data offset 상위 4비트 * 4
-
-  int payload_len = ntohs(ip->iph_len) - ip_header_len - tcp_header_len;
-  const u_char *payload =
-      packet + sizeof(struct ethheader) + ip_header_len + tcp_header_len;
-
-  printf("\n========================================\n");
-
-  printf("[Ethernet]\n");
-  printf("  Src MAC : %02x:%02x:%02x:%02x:%02x:%02x\n",
-         eth->ether_shost[0], eth->ether_shost[1], eth->ether_shost[2],
-         eth->ether_shost[3], eth->ether_shost[4], eth->ether_shost[5]);
-  printf("  Dst MAC : %02x:%02x:%02x:%02x:%02x:%02x\n",
-         eth->ether_dhost[0], eth->ether_dhost[1], eth->ether_dhost[2],
-         eth->ether_dhost[3], eth->ether_dhost[4], eth->ether_dhost[5]);
-
-  printf("[IP]\n");
-  printf("  Src IP  : %s\n", inet_ntoa(ip->iph_sourceip));
-  printf("  Dst IP  : %s\n", inet_ntoa(ip->iph_destip));
-
-  printf("[TCP]\n");
-  printf("  Src Port: %d\n", ntohs(tcp->tcp_sport));
-  printf("  Dst Port: %d\n", ntohs(tcp->tcp_dport));
-
-  if (payload_len > 0) {
-    printf("[HTTP Message] (length: %d bytes)\n", payload_len);
-    int print_len = (payload_len < 1024) ? payload_len : 1024;
-    for (int i = 0; i < print_len; i++) {
-      unsigned char c = payload[i];
-      if (c == '\r') continue;
-      putchar((c >= 0x20 && c < 0x7f) || c == '\n' ? c : '.');
-    }
-    if (payload_len > 1024)
-      printf("\n... (%d bytes more)\n", payload_len - 1024);
-  }
-
-  printf("========================================\n");
-  fflush(stdout);
-}
-
-// NIC을 열고 BPF 필터(tcp)를 적용한 뒤 패킷 캡처 루프 실행
-int main() {
-  pcap_t *handle;
-  char errbuf[PCAP_ERRBUF_SIZE];
-  struct bpf_program fp;
-  char filter_exp[] = "tcp";
-  bpf_u_int32 net = 0;
-
-  handle = pcap_open_live("eno1", BUFSIZ, 1, 1000, errbuf); // 1 = promiscuous mode
-  if (handle == NULL) {
-    fprintf(stderr, "pcap_open_live 실패: %s\n", errbuf);
-    exit(EXIT_FAILURE);
-  }
-
-  if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
-    fprintf(stderr, "pcap_compile 실패: %s\n", pcap_geterr(handle));
-    exit(EXIT_FAILURE);
-  }
-  if (pcap_setfilter(handle, &fp) == -1) {
-    pcap_perror(handle, "Error:");
-    exit(EXIT_FAILURE);
-  }
-
-  printf("TCP 패킷 캡처 시작 (Ctrl+C로 종료)...\n");
-  pcap_loop(handle, -1, got_packet, NULL); // -1 = 무한 캡처
-
-  pcap_close(handle);
-  return 0;
-}
-```
-
----
-
-## 6. 빌드 및 실행
+## 5. 빌드 및 실행
 
 ### 빌드
 
@@ -379,7 +234,7 @@ curl <http://httpforever.com>
 
 ---
 
-## 7. 실행 결과
+## 6. 실행 결과
 
 `curl http://httpforever.com` 실행 시 캡처된 출력:
 
@@ -442,7 +297,7 @@ Accept-Ranges: bytes
 
 ---
 
-## 8. 느낀 점 및 이해
+## 7. 느낀 점 및 이해
 
 #### 1. 이론적 모델의 실체화 (OSI 7 Layer와 포인터 연산)
 
@@ -466,6 +321,6 @@ Accept-Ranges: bytes
 
 ---
 
-## 9. GitHub
+## 8. GitHub
 
 https://github.com/cindysjlee/whs-pcap-programming
