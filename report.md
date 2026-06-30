@@ -226,7 +226,7 @@ sudo ./pcap_sniffer
 다른 터미널에서 HTTP 요청을 발생시킨다.
 
 ```bash
-curl <http://httpforever.com>
+curl http://httpforever.com
 ```
 
 > HTTPS(포트 443)는 TLS로 암호화되어 있어 payload 내용을 볼 수 없다. 반드시 `http://` 사이트로 테스트해야 한다.
