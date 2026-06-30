@@ -205,7 +205,152 @@ handle = pcap_open_live("eno1", BUFSIZ, 1, 1000, errbuf);
 
 ---
 
-## 5. 빌드 및 실행
+## 5. 코드
+
+보고서 최하단에 추가로 Github 링크도 추가해놓았다.
+
+### myheader.h
+
+```c
+/* Ethernet header */
+struct ethheader {
+    u_char  ether_dhost[6];
+    u_char  ether_shost[6];
+    u_short ether_type;
+};
+
+/* IP Header */
+struct ipheader {
+  unsigned char      iph_ihl:4,
+                     iph_ver:4;
+  unsigned char      iph_tos;
+  unsigned short int iph_len;
+  unsigned short int iph_ident;
+  unsigned short int iph_flag:3,
+                     iph_offset:13;
+  unsigned char      iph_ttl;
+  unsigned char      iph_protocol;
+  unsigned short int iph_chksum;
+  struct  in_addr    iph_sourceip;
+  struct  in_addr    iph_destip;
+};
+
+/* TCP Header */
+struct tcpheader {
+    u_short tcp_sport;
+    u_short tcp_dport;
+    u_int   tcp_seq;
+    u_int   tcp_ack;
+    u_char  tcp_offx2;
+#define TH_OFF(th)  (((th)->tcp_offx2 & 0xf0) >> 4)
+    u_char  tcp_flags;
+    u_short tcp_win;
+    u_short tcp_sum;
+    u_short tcp_urp;
+};
+```
+
+### pcap_sniffer.c
+
+```c
+#include <arpa/inet.h>
+#include <pcap.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "myheader.h"
+
+// pcap_loop에서 패킷 캡처 시마다 호출되는 콜백 함수
+// Ethernet -> IP -> TCP -> HTTP 순서로 역캡슐화하여 각 헤더 정보 출력
+void got_packet(u_char *args, const struct pcap_pkthdr *header,
+                const u_char *packet) {
+  struct ethheader *eth = (struct ethheader *)packet;
+
+  if (ntohs(eth->ether_type) != 0x0800) // 0x0800 = IPv4
+    return;
+
+  struct ipheader *ip = (struct ipheader *)(packet + sizeof(struct ethheader));
+  int ip_header_len = ip->iph_ihl * 4; // ihl * 4 = 실제 바이트 수
+
+  if (ip->iph_protocol != IPPROTO_TCP)
+    return;
+
+  struct tcpheader *tcp =
+      (struct tcpheader *)(packet + sizeof(struct ethheader) + ip_header_len);
+  int tcp_header_len = TH_OFF(tcp) * 4; // data offset 상위 4비트 * 4
+
+  int payload_len = ntohs(ip->iph_len) - ip_header_len - tcp_header_len;
+  const u_char *payload =
+      packet + sizeof(struct ethheader) + ip_header_len + tcp_header_len;
+
+  printf("\n========================================\n");
+
+  printf("[Ethernet]\n");
+  printf("  Src MAC : %02x:%02x:%02x:%02x:%02x:%02x\n",
+         eth->ether_shost[0], eth->ether_shost[1], eth->ether_shost[2],
+         eth->ether_shost[3], eth->ether_shost[4], eth->ether_shost[5]);
+  printf("  Dst MAC : %02x:%02x:%02x:%02x:%02x:%02x\n",
+         eth->ether_dhost[0], eth->ether_dhost[1], eth->ether_dhost[2],
+         eth->ether_dhost[3], eth->ether_dhost[4], eth->ether_dhost[5]);
+
+  printf("[IP]\n");
+  printf("  Src IP  : %s\n", inet_ntoa(ip->iph_sourceip));
+  printf("  Dst IP  : %s\n", inet_ntoa(ip->iph_destip));
+
+  printf("[TCP]\n");
+  printf("  Src Port: %d\n", ntohs(tcp->tcp_sport));
+  printf("  Dst Port: %d\n", ntohs(tcp->tcp_dport));
+
+  if (payload_len > 0) {
+    printf("[HTTP Message] (length: %d bytes)\n", payload_len);
+    int print_len = (payload_len < 1024) ? payload_len : 1024;
+    for (int i = 0; i < print_len; i++) {
+      unsigned char c = payload[i];
+      if (c == '\r') continue;
+      putchar((c >= 0x20 && c < 0x7f) || c == '\n' ? c : '.');
+    }
+    if (payload_len > 1024)
+      printf("\n... (%d bytes more)\n", payload_len - 1024);
+  }
+
+  printf("========================================\n");
+  fflush(stdout);
+}
+
+// NIC을 열고 BPF 필터(tcp)를 적용한 뒤 패킷 캡처 루프 실행
+int main() {
+  pcap_t *handle;
+  char errbuf[PCAP_ERRBUF_SIZE];
+  struct bpf_program fp;
+  char filter_exp[] = "tcp";
+  bpf_u_int32 net = 0;
+
+  handle = pcap_open_live("eno1", BUFSIZ, 1, 1000, errbuf); // 1 = promiscuous mode
+  if (handle == NULL) {
+    fprintf(stderr, "pcap_open_live 실패: %s\n", errbuf);
+    exit(EXIT_FAILURE);
+  }
+
+  if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
+    fprintf(stderr, "pcap_compile 실패: %s\n", pcap_geterr(handle));
+    exit(EXIT_FAILURE);
+  }
+  if (pcap_setfilter(handle, &fp) == -1) {
+    pcap_perror(handle, "Error:");
+    exit(EXIT_FAILURE);
+  }
+
+  printf("TCP 패킷 캡처 시작 (Ctrl+C로 종료)...\n");
+  pcap_loop(handle, -1, got_packet, NULL); // -1 = 무한 캡처
+
+  pcap_close(handle);
+  return 0;
+}
+```
+
+---
+
+## 6. 빌드 및 실행
 
 ### 빌드
 
@@ -234,9 +379,9 @@ curl <http://httpforever.com>
 
 ---
 
-## 6. 실행 결과
+## 7. 실행 결과
 
-`curl <http://httpforever.com`> 실행 시 캡처된 출력:
+`curl http://httpforever.com` 실행 시 캡처된 출력:
 
 ```
 ========================================
@@ -247,7 +392,7 @@ curl <http://httpforever.com>
   Src IP  : 192.168.0.2
   Dst IP  : 146.190.62.39
 [TCP]
-  Src Port: 47468
+  Src Port: 35490
   Dst Port: 80
 [HTTP Message] (length: 79 bytes)
 GET / HTTP/1.1
@@ -266,36 +411,61 @@ Accept: */*
   Dst IP  : 192.168.0.2
 [TCP]
   Src Port: 80
-  Dst Port: 47468
+  Dst Port: 35490
 [HTTP Message] (length: 1448 bytes)
 HTTP/1.1 200 OK
 Server: nginx/1.18.0 (Ubuntu)
-Date: Tue, 30 Jun 2026 15:22:30 GMT
+Date: Tue, 30 Jun 2026 19:54:19 GMT
 Content-Type: text/html
-...
+Content-Length: 5124
+Last-Modified: Wed, 22 Mar 2023 14:54:48 GMT
+Connection: keep-alive
+ETag: "641b16b8-1404"
+Referrer-Policy: strict-origin-when-cross-origin
+X-Content-Type-Options: nosniff
+Feature-Policy: accelerometer 'none'; camera 'none'; geolocation 'none'; gyroscope 'none'; magnetometer 'none'; microphone 'none'; payment 'none'; usb 'none'
+Content-Security-Policy: default-src 'self'; script-src cdnjs.cloudflare.com 'self' 'report-sha256'; style-src cdnjs.cloudflare.com 'self' fonts.googleapis.com 'unsafe-inline'; font-src fonts.googleapis.com fonts.gstatic.com cdnjs.cloudflare.com; frame-ancestors 'none'; report-uri https://scotthelme.report-uri.com/r/d/csp/enforce
+Accept-Ranges: bytes
+
+<!DOCTYPE HTML>
 <html>
-<body>
-  <h2>HTTP FOREVER</h2>
-</body>
-</html>
+.<head>
+..<title>HTTP Forever</title>
+..<meta http-equiv="content-type" content="text/html; charset=utf-8" />
+..<meta name="description" content="A site that will always be
+... (424 bytes more)
 ========================================
 ```
 
-Src Port 47468 → Dst Port 80 패킷은 클라이언트(내 PC)가 서버로 보낸 HTTP Request이고,
-Src Port 80 → Dst Port 47468 패킷은 서버가 응답한 HTTP Response다.
+- `Src Port 35490 → Dst Port 80` 패킷은 클라이언트(내 PC)가 서버로 보낸 **HTTP GET Request**이다.
+- `Src Port 80 → Dst Port 35490` 패킷은 서버가 응답한 **HTTP 200 OK Response**이며, Payload로 HTML 문서가 전달된 것을 확인할 수 있다.
 
 ---
 
-## 7. 느낀 점 및 이해
+## 8. 느낀 점 및 이해
 
-이번 과제를 통해 네트워크 패킷이 실제로 어떤 구조로 되어 있는지 직접 확인할 수 있었다. 수업에서 배운 OSI 7계층 모델이 실제로 바이트 단위로 구현되어 있다는 것을 코드로 체감했다.
+#### 1. 이론적 모델의 실체화 (OSI 7 Layer와 포인터 연산)
 
-특히 IP 헤더와 TCP 헤더의 길이가 고정이 아니라 가변이라는 점이 인상적이었다. `iph_ihl * 4`, `TH_OFF(tcp) * 4`처럼 각 헤더에 담긴 길이 정보를 읽어서 다음 계층의 시작 위치를 계산해야 한다는 것을 직접 구현하며 이해하게 됐다.
+기존에는 OSI 7계층이나 캡슐화/역캡슐화 과정을 주로 다이어그램이나 이론적인 개념으로만 알고 있었습니다. 하지만 이번 과제를 통해 C 언어의 구조체 포인터 형변환과 메모리 오프셋 연산을 활용하여, 캡처된 패킷의 원시 데이터에 직접 접근해 바깥쪽 헤더부터 하나씩 벗겨내는 과정을 구현해 보면서 네트워크 모델이 실제 바이트 단위로 어떻게 구현되어 있는지 체감할 수 있었습니다.
 
-또한 HTTPS 트래픽은 TLS 암호화로 인해 payload를 볼 수 없었는데, 이를 통해 암호화가 실제 보안에서 얼마나 중요한 역할을 하는지 실감했다.
+#### **2. 동적 오프셋 계산의 중요성 (가변 헤더)**
+
+가장 인상 깊었던 부분은 IP 헤더와 TCP 헤더의 길이가 고정되어 있지 않다는 점이었습니다. 단순히 고정된 크기만큼 메모리를 이동시키는 것이 아니라, `iph_ihl * 4`나 `TH_OFF(tcp) * 4`처럼 패킷 내부의 제어 정보를 동적으로 읽어와 다음 계층의 정확한 시작 위치를 스스로 계산하도록 프로그래밍해야 한다는 점을 깨달았습니다. 이를 통해 프로토콜 설계자들이 확장성(Options 필드)을 어떻게 고려했는지 이해할 수 있었습니다.
+
+#### **3. 시스템 아키텍처와 네트워크의 차이 이해 (엔디안)**
+
+또한, 바이트 오더의 차이를 처리하는 과정도 흥미로웠습니다. 호스트 시스템(Little-endian)과 네트워크 표준(Big-endian)의 차이로 인해 2바이트 이상의 데이터(포트 번호, 패킷 길이 등)를 읽을 때 데이터가 왜곡되는 현상을 겪으면서, 이기종 시스템 간의 통신에서 `ntohs()`와 같은 바이트 순서 변환이 왜 필수적인지 코드 레벨에서 명확히 이해하게 되었습니다.
+
+#### **4. 평문 통신의 취약성과 TLS 암호화의 위력**
+
+보안적인 측면에서도 큰 깨달음을 얻었습니다. `curl`을 이용해 평문(HTTP)으로 통신했을 때는 패킷 캡처를 통해 주고받는 HTML 문서나 헤더 정보(Payload)가 날것 그대로 노출되는 것을 확인했습니다. 반면, HTTPS 트래픽을 캡처했을 때는 TLS 암호화가 적용되어 Payload 부분이 완전히 해독 불가능한 바이트 덩어리로 출력되었습니다. 이를 통해 왜 현대 웹 환경에서 평문 통신을 지양하고 HTTPS를 필수로 도입해야 하는지, 통신 암호화가 스니핑(Sniffing) 공격을 방어하는 데 얼마나 강력한 역할을 하는지 직접 눈으로 확인할 수 있었습니다.
+
+#### **5. 실무적 관점에서의 한계 및 개선 방향**
+
+이번 과제는 정상적인 패킷 캡처에 집중하여 구현했지만, 코드를 작성하며 "만약 조작되거나 손상된 짧은 패킷이 들어온다면?"이라는 의문을 갖게 되었습니다. 길이 검증 없이 메모리 포인터만 이동시킬 경우 Segmentation Fault가 발생할 수 있음을 인지하게 되었고, 실제 상용 보안 장비나 분석 툴을 개발할 때는 캡처된 버퍼의 길이(`caplen`)를 엄격하게 검사하는 예외 처리와 메모리 안전성이 반드시 동반되어야 함을 배울 수 있는 뜻깊은 경험이었습니다.
 
 ---
 
-## 8. GitHub
+## 9. GitHub
 
 https://github.com/cindysjlee/whs-pcap-programming
