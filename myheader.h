@@ -1,6 +1,4 @@
 
-#include <sys/types.h>  /* u_char, u_short, u_int 타입 정의 */
-
 /* Ethernet header */
 struct ethheader {
     u_char  ether_dhost[6];    /* destination host address */
